@@ -24,7 +24,9 @@ impl ApplicationHandler for App<'_> {
             let window = Arc::new(event_loop.create_window(Window::default_attributes()).unwrap());
             self.window = Some(window.clone());
 
-            let state = pollster::block_on(RenderState::new(window.clone()));
+            let mut state = pollster::block_on(RenderState::new(window.clone()));
+            state.create_pipelines();
+            state.randomize();
             self.state = Some(state);
         }
     }
@@ -44,8 +46,10 @@ impl ApplicationHandler for App<'_> {
                 self.state.as_mut().unwrap().resize(physical_size);
             },
             WindowEvent::RedrawRequested => {
-                println!("Redraw requested");
-                self.state.as_ref().unwrap().draw();
+                let state = self.state.as_mut().unwrap();
+                state.transition();
+                state.draw();
+                self.window.as_ref().unwrap().request_redraw();
             },
             _ => {},
         }

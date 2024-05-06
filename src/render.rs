@@ -1,17 +1,16 @@
 use std::sync::Arc;
-
 use winit::{dpi::PhysicalSize, window::Window};
+use rand;
 
-const SIMULATION_WIDTH: u32 = 128;
-const SIMULATION_HEIGHT: u32 = 128;
+const SIMULATION_WIDTH: u32 = 1024;
+const SIMULATION_HEIGHT: u32 = 1024;
 
 struct TextureResource {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
-    transition_sampler: wgpu::Sampler,
-    display_sampler: wgpu::Sampler,
-    transition_bind_group: wgpu::BindGroup,
-    display_bind_group: wgpu::BindGroup,
+    sampler: wgpu::Sampler,
+    transition_bind_group: Option<wgpu::BindGroup>,
+    display_bind_group: Option<wgpu::BindGroup>,
 }
 
 struct TextureSwapper {
@@ -68,10 +67,12 @@ pub struct RenderState<'a> {
     device: wgpu::Device,
     queue: wgpu::Queue,
     surface_config: wgpu::SurfaceConfiguration,
-    texture_swapper: TextureSwapper,
-    transition_pipeline: wgpu::ComputePipeline,
-    display_pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
+    texture_size: (u32, u32),
+
+    texture_swapper: Option<TextureSwapper>,
+    transition_pipeline: Option<wgpu::ComputePipeline>,
+    display_pipeline: Option<wgpu::RenderPipeline>,
+    vertex_buffer: Option<wgpu::Buffer>,
 }
 
 impl<'a> RenderState<'a> {
@@ -110,113 +111,104 @@ impl<'a> RenderState<'a> {
             window_size.height).unwrap();
         surface.configure(&device, &surface_config);
 
+        let texture_size = (SIMULATION_WIDTH, SIMULATION_HEIGHT);   
+
+        Self {
+            instance,
+            surface,
+            device,
+            queue,
+            surface_config,
+            texture_size,
+            texture_swapper: None,
+            transition_pipeline: None,
+            display_pipeline: None,
+            vertex_buffer: None,
+        }
+    }
+
+    pub fn create_pipelines(&mut self) {
         // Create bind group layout for transition
         let transition_bind_group_layout =
-                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                multisampled: false,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                sample_type: wgpu::TextureSampleType::Uint,
-                            },
-                            count: None,
+            self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float {filterable: false},
                         },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
-                            count: None,
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::StorageTexture { 
+                            access: wgpu::StorageTextureAccess::WriteOnly, 
+                            format: wgpu::TextureFormat::R32Float, 
+                            view_dimension: wgpu::TextureViewDimension::D2,
                         },
-                    ],
-                    label: Some("transition_bind_group_layout"),
-                });
-
-        // Create bind group layout for display
-        let display_bind_group_layout =
-                device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                    entries: &[
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 0,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Texture {
-                                multisampled: false,
-                                view_dimension: wgpu::TextureViewDimension::D2,
-                                sample_type: wgpu::TextureSampleType::Uint,
-                            },
-                            count: None,
-                        },
-                        wgpu::BindGroupLayoutEntry {
-                            binding: 1,
-                            visibility: wgpu::ShaderStages::FRAGMENT,
-                            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                            count: None,
-                        },
-                    ],
-                    label: Some("display_bind_group_layout"),
-                });
-
-        // Create texture swapper
-        let texture_swapper = TextureSwapper {
-            index: 0,
-            texture_resources: [
-                RenderState::create_texture_resource(
-                    &device, 
-                    &transition_bind_group_layout,
-                    &display_bind_group_layout, 
-                    (SIMULATION_WIDTH, SIMULATION_HEIGHT)
-                ), 
-                RenderState::create_texture_resource(
-                    &device, 
-                    &transition_bind_group_layout,
-                    &display_bind_group_layout,  
-                    (SIMULATION_WIDTH, SIMULATION_HEIGHT)
-                ),
-            ],
-        };
+                        count: None,
+                    },
+                ],
+                label: Some("transition_bind_group_layout"),
+            });
 
         // Create pipeline layout for transition
         let transition_pipeline_layout =
-            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("transition_pipeline_layout"),
-                bind_group_layouts: &[&transition_bind_group_layout, &transition_bind_group_layout],
+                bind_group_layouts: &[&transition_bind_group_layout],
                 push_constant_ranges: &[],
+            });
+
+        // Create the transition pipeline
+        let transition_shader_module = self.device.create_shader_module(wgpu::include_wgsl!("transition.wgsl"));
+        self.transition_pipeline = Some(self.device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+            label: Some("compute_pipeline"),
+            layout: Some(&transition_pipeline_layout),
+            module: &transition_shader_module,
+            entry_point: "main",
+            compilation_options: Default::default(),
+        }));
+
+        // Create bind group layout for display
+        let display_bind_group_layout =
+            self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            multisampled: false,
+                            view_dimension: wgpu::TextureViewDimension::D2,
+                            sample_type: wgpu::TextureSampleType::Float {filterable: false},
+                        },
+                        count: None,
+                    },
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::NonFiltering),
+                        count: None,
+                    },
+                ],
+                label: Some("display_bind_group_layout"),
             });
 
         // Create pipeline layout for display
         let display_pipeline_layout =
-        device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
-            label: Some("display_pipeline_layout"),
-            bind_group_layouts: &[&display_bind_group_layout],
-            push_constant_ranges: &[],
-        });
-
-        // Create the transition compute pipeline
-        let transition_shader_module = device.create_shader_module(wgpu::include_wgsl!("transition.wgsl"));
-        let transition_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
-            label: Some("compute_pipeline"),
-            layout: None,
-            module: &transition_shader_module,
-            entry_point: "main",
-            compilation_options: Default::default(),
-        });
-
-        // Create vertex buffer
-        let vertex_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("quad_vertex_buffer"),
-            size: (std::mem::size_of::<Vertex>() * QUAD_VERTICES.len()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
-
-        // Upload the vertices
-        queue.write_buffer(&vertex_buffer, 0, bytemuck::cast_slice(&QUAD_VERTICES));
+            self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("display_pipeline_layout"),
+                bind_group_layouts: &[&display_bind_group_layout],
+                push_constant_ranges: &[],
+            });
         
-        // Create the display render pipeline
-        let display_shader_module = device.create_shader_module(wgpu::include_wgsl!("display.wgsl"));
-        let display_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        // Create the display pipeline
+        let display_shader_module = self.device.create_shader_module(wgpu::include_wgsl!("display.wgsl"));
+        self.display_pipeline = Some(self.device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("display_pipeline"),
             layout: Some(&display_pipeline_layout),
             vertex: wgpu::VertexState {
@@ -231,7 +223,7 @@ impl<'a> RenderState<'a> {
                 module: &display_shader_module,
                 entry_point: "fs_main",
                 targets: &[Some(wgpu::ColorTargetState {
-                    format: surface_config.format,
+                    format: self.surface_config.format,
                     blend: Some(wgpu::BlendState::REPLACE),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
@@ -253,117 +245,122 @@ impl<'a> RenderState<'a> {
                 alpha_to_coverage_enabled: false,
             },
             multiview: None,
+        }));
+
+        // Create vertex buffer
+        self.vertex_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("quad_vertex_buffer"),
+            size: (std::mem::size_of::<Vertex>() * QUAD_VERTICES.len()) as u64,
+            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+
+        // Upload the vertices
+        self.queue.write_buffer(&self.vertex_buffer.as_ref().unwrap(), 0, bytemuck::cast_slice(&QUAD_VERTICES));
+
+        // Create the texture resources
+        let mut tex_a = self.create_texture_resource();
+        let mut tex_b = self.create_texture_resource();
+
+        // Create bindings for reading and writing to textures
+        self.create_transition_bind_group(&mut tex_a, &mut tex_b, &transition_bind_group_layout);
+        self.create_transition_bind_group(&mut tex_b, &mut tex_a, &transition_bind_group_layout);
+
+        // Create bindings for displaying textures
+        self.create_display_bind_group(&mut tex_a, &display_bind_group_layout);
+        self.create_display_bind_group(&mut tex_b, &display_bind_group_layout);
+
+        // Create the texture swapper
+        self.texture_swapper = Some(TextureSwapper {
+            index: 0,
+            texture_resources: [
+                tex_a,
+                tex_b,
+            ],
         });
-        
-
-        Self {
-            instance,
-            surface,
-            device,
-            queue,
-            surface_config,
-            texture_swapper,
-            transition_pipeline,
-            display_pipeline,
-            vertex_buffer,
-        }
     }
 
-    pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
-        if new_size.width > 0 && new_size.height > 0 {
-            self.surface_config.width = new_size.width;
-            self.surface_config.height = new_size.height;
-            self.surface.configure(&self.device, &self.surface_config);
-        }
-    }
-
-    fn create_texture_resource(
-        device: &wgpu::Device, 
-        transition_group_layout: &wgpu::BindGroupLayout,
-        display_group_layout: &wgpu::BindGroupLayout,
-        (width, height): (u32, u32),
-    ) -> TextureResource {
-        let texture = device.create_texture(
+    fn create_texture_resource(&self) -> TextureResource {
+        let texture = self.device.create_texture(
             &wgpu::TextureDescriptor{
                 label: Some("texture"),
                 size: wgpu::Extent3d {
-                    width: width,
-                    height: height,
+                    width: self.texture_size.0,
+                    height: self.texture_size.1,
                     depth_or_array_layers: 1,
                 },
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R32Uint,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING,
+                format: wgpu::TextureFormat::R32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             }
         );
 
         let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        let transition_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+        let sampler = self.device.create_sampler(&wgpu::SamplerDescriptor {
             address_mode_u: wgpu::AddressMode::Repeat,
             address_mode_v: wgpu::AddressMode::Repeat,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::FilterMode::Nearest,
             ..Default::default()
         });
-
-        let display_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            address_mode_u: wgpu::AddressMode::Repeat,
-            address_mode_v: wgpu::AddressMode::Repeat,
-            address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Linear,
-            min_filter: wgpu::FilterMode::Linear,
-            mipmap_filter: wgpu::FilterMode::Linear,
-            ..Default::default()
-        });
-
-        let transition_bind_group = device.create_bind_group(
-            &wgpu::BindGroupDescriptor {
-                layout: transition_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&transition_sampler),
-                    },
-                ],
-                label: Some("transition_texture_bind_group"),
-            }
-        );
-
-        let display_bind_group = device.create_bind_group(
-            &wgpu::BindGroupDescriptor {
-                layout: display_group_layout,
-                entries: &[
-                    wgpu::BindGroupEntry {
-                        binding: 0,
-                        resource: wgpu::BindingResource::TextureView(&view),
-                    },
-                    wgpu::BindGroupEntry {
-                        binding: 1,
-                        resource: wgpu::BindingResource::Sampler(&display_sampler),
-                    },
-                ],
-                label: Some("display_bind_group"),
-            }
-        );
 
         TextureResource {
             texture,
             view,
-            transition_sampler,
-            display_sampler,
-            transition_bind_group,
-            display_bind_group,
+            sampler,
+            transition_bind_group: None,
+            display_bind_group: None,
         }
+    }
+
+    fn create_transition_bind_group(
+        &self, 
+        read: &mut TextureResource, 
+        write: &mut TextureResource, 
+        layout: &wgpu::BindGroupLayout
+    ) {
+        read.transition_bind_group = Some(self.device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                layout: layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&read.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::TextureView(&write.view),
+                    },
+                ],
+                label: Some("transition_bind_group"),
+            }
+        ));
+    }
+
+    fn create_display_bind_group(
+        &self, 
+        resource: &mut TextureResource, 
+        layout: &wgpu::BindGroupLayout
+    ) {
+        resource.display_bind_group = Some(self.device.create_bind_group(
+            &wgpu::BindGroupDescriptor {
+                layout: layout,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(&resource.view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&resource.sampler),
+                    },
+                ],
+                label: Some("display_bind_group"),
+            }
+        ));
     }
 
     fn compute_work_group_count(
@@ -377,9 +374,8 @@ impl<'a> RenderState<'a> {
     }    
 
     pub fn transition(&mut self) {
-        let output_resource = &self.texture_swapper.get_write_resource();
-        let input_resource = self.texture_swapper.get_read_resource();
-        let texture_size = input_resource.texture.size();
+        let texture_resource = self.texture_swapper.as_ref().unwrap().get_read_resource();
+        let texture_size = texture_resource.texture.size();
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("transition_encoder"),
@@ -396,20 +392,19 @@ impl<'a> RenderState<'a> {
                 (16, 16)
             );
 
-            compute_pass.set_pipeline(&self.transition_pipeline);
-            compute_pass.set_bind_group(0, &input_resource.transition_bind_group, &[]);
-            compute_pass.set_bind_group(1, &output_resource.transition_bind_group, &[]);
+            compute_pass.set_pipeline(self.transition_pipeline.as_ref().unwrap());
+            compute_pass.set_bind_group(0, texture_resource.transition_bind_group.as_ref().unwrap(), &[]);
             compute_pass.dispatch_workgroups(dispatch_with, dispatch_height, 1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
-        self.texture_swapper.swap();
+        self.texture_swapper.as_mut().unwrap().swap();
     }
 
     pub fn draw(&self) {
         let output = self.surface.get_current_texture().unwrap();
         let output_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let input_bind_group = &self.texture_swapper.get_read_resource().display_bind_group;
+        let input_bind_group = &self.texture_swapper.as_ref().unwrap().get_read_resource().display_bind_group;
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("display_encoder"),
@@ -436,13 +431,66 @@ impl<'a> RenderState<'a> {
                 occlusion_query_set: None,
             });
 
-            render_pass.set_pipeline(&self.display_pipeline);
-            render_pass.set_bind_group(0, &input_bind_group, &[]);
-            render_pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
+            render_pass.set_pipeline(&self.display_pipeline.as_ref().unwrap());
+            render_pass.set_bind_group(0, input_bind_group.as_ref().unwrap(), &[]);
+            render_pass.set_vertex_buffer(0, self.vertex_buffer.as_ref().unwrap().slice(..));
             render_pass.draw(0..4, 0..1);
         }
 
         self.queue.submit(std::iter::once(encoder.finish()));
         output.present();
+    }
+
+    pub fn resize(&mut self, new_size: PhysicalSize<u32>) {
+        if new_size.width > 0 && new_size.height > 0 {
+            self.surface_config.width = new_size.width;
+            self.surface_config.height = new_size.height;
+            self.surface.configure(&self.device, &self.surface_config);
+        }
+    }
+
+    pub fn set_texture(&mut self, data: &[f32]) {
+        let texture = &self.texture_swapper.as_ref().unwrap().get_write_resource().texture;
+
+        self.queue.write_texture(
+            wgpu::ImageCopyTexture {
+                texture: texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&data),
+            wgpu::ImageDataLayout {
+                offset: 0,
+                bytes_per_row: Some(self.texture_size.0 * std::mem::size_of::<f32>() as u32),
+                rows_per_image: Some(self.texture_size.1),
+            },
+            wgpu::Extent3d {
+                width: self.texture_size.0,
+                height: self.texture_size.1,
+                depth_or_array_layers: 1,
+            },
+        );
+
+        self.texture_swapper.as_mut().unwrap().swap();
+    }
+
+    pub fn randomize(&mut self) {
+        let width = self.texture_size.0 as usize;
+        let height = self.texture_size.1 as usize;
+        let capacity = width * height;
+        let mut data = Vec::with_capacity(capacity);
+        
+        for y in 0..height {
+            for x in 0..width {
+                let random_value: f32 = match rand::random::<bool>() {
+                    true => 1.0,
+                    _ => 0.0,
+                };
+                data.push(random_value);
+            }
+        }
+
+        self.set_texture(data.as_slice());
     }
 }
