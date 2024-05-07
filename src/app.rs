@@ -1,10 +1,7 @@
 use std::sync::Arc;
 
 use winit::{
-    application::ApplicationHandler,
-    event::*,
-    event_loop::ActiveEventLoop,
-    window::{Window, WindowId}
+    application::ApplicationHandler, event::*, event_loop::ActiveEventLoop, keyboard::{KeyCode, PhysicalKey}, window::{Window, WindowId}
 };
 
 use crate::render::RenderState;
@@ -36,6 +33,8 @@ impl ApplicationHandler for App<'_> {
             return;
         }
 
+        let state = self.state.as_mut().unwrap();
+
         match event {
             WindowEvent::CloseRequested => {
                 println!("Close requested");
@@ -46,10 +45,35 @@ impl ApplicationHandler for App<'_> {
                 self.state.as_mut().unwrap().resize(physical_size);
             },
             WindowEvent::RedrawRequested => {
-                let state = self.state.as_mut().unwrap();
                 state.transition();
                 state.draw();
                 self.window.as_ref().unwrap().request_redraw();
+            },
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::Escape),
+                        state: ElementState::Pressed,
+                        repeat: false,
+                        ..
+                    },
+                ..
+            } => {
+                println!("Close requested");
+                event_loop.exit();
+            },
+            WindowEvent::KeyboardInput {
+                event:
+                    KeyEvent {
+                        physical_key: PhysicalKey::Code(KeyCode::Space),
+                        state: ElementState::Pressed,
+                        repeat: false,
+                        ..
+                    },
+                ..
+            } => {
+                println!("Space key pressed!");
+                state.randomize();
             },
             _ => {},
         }

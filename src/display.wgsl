@@ -25,5 +25,9 @@ fn vs_main(
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let color = textureSample(texture, texture_sampler, in.uv);
-    return vec4<f32>(color.r, color.r, color.r, 1.0);
+    return max(mix(
+        vec4<f32>(0.0, -0.4, 0.0, 1.0),
+        vec4<f32>(0.0, 1.2, 0.5, 1.0),
+        color.g
+    ), vec4<f32>(color.r, color.r, color.r, 1.0));
 }

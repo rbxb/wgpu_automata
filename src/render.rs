@@ -2,8 +2,8 @@ use std::sync::Arc;
 use winit::{dpi::PhysicalSize, window::Window};
 use rand;
 
-const SIMULATION_WIDTH: u32 = 1024;
-const SIMULATION_HEIGHT: u32 = 1024;
+const SIMULATION_WIDTH: u32 = 256;
+const SIMULATION_HEIGHT: u32 = 256;
 
 struct TextureResource {
     texture: wgpu::Texture,
@@ -138,7 +138,7 @@ impl<'a> RenderState<'a> {
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
                             view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float {filterable: false},
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         },
                         count: None,
                     },
@@ -147,7 +147,7 @@ impl<'a> RenderState<'a> {
                         visibility: wgpu::ShaderStages::COMPUTE,
                         ty: wgpu::BindingType::StorageTexture { 
                             access: wgpu::StorageTextureAccess::WriteOnly, 
-                            format: wgpu::TextureFormat::R32Float, 
+                            format: wgpu::TextureFormat::Rg32Float, 
                             view_dimension: wgpu::TextureViewDimension::D2,
                         },
                         count: None,
@@ -184,7 +184,7 @@ impl<'a> RenderState<'a> {
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
                             view_dimension: wgpu::TextureViewDimension::D2,
-                            sample_type: wgpu::TextureSampleType::Float {filterable: false},
+                            sample_type: wgpu::TextureSampleType::Float { filterable: false },
                         },
                         count: None,
                     },
@@ -231,7 +231,7 @@ impl<'a> RenderState<'a> {
             }),
             primitive: wgpu::PrimitiveState {
                 topology: wgpu::PrimitiveTopology::TriangleStrip,
-                strip_index_format: Some(wgpu::IndexFormat::Uint16),
+                strip_index_format: Some(wgpu::IndexFormat::Uint32),
                 front_face: wgpu::FrontFace::Ccw,
                 cull_mode: None,
                 polygon_mode: wgpu::PolygonMode::Fill,
@@ -292,7 +292,7 @@ impl<'a> RenderState<'a> {
                 mip_level_count: 1,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::R32Float,
+                format: wgpu::TextureFormat::Rg32Float,
                 usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::STORAGE_BINDING | wgpu::TextureUsages::COPY_DST,
                 view_formats: &[],
             }
@@ -418,9 +418,9 @@ impl<'a> RenderState<'a> {
                     resolve_target: None,
                     ops: wgpu::Operations {
                         load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: 0.1, // Pick any color you want here
-                            g: 0.9,
-                            b: 0.3,
+                            r: 0.0, // Pick any color you want here
+                            g: 0.0,
+                            b: 0.0,
                             a: 1.0,
                         }),
                         store: wgpu::StoreOp::Store,
@@ -449,7 +449,7 @@ impl<'a> RenderState<'a> {
         }
     }
 
-    pub fn set_texture(&mut self, data: &[f32]) {
+    pub fn set_texture(&mut self, data: &[u8]) {
         let texture = &self.texture_swapper.as_ref().unwrap().get_write_resource().texture;
 
         self.queue.write_texture(
@@ -459,10 +459,10 @@ impl<'a> RenderState<'a> {
                 origin: wgpu::Origin3d::ZERO,
                 aspect: wgpu::TextureAspect::All,
             },
-            bytemuck::cast_slice(&data),
+            data,
             wgpu::ImageDataLayout {
                 offset: 0,
-                bytes_per_row: Some(self.texture_size.0 * std::mem::size_of::<f32>() as u32),
+                bytes_per_row: Some(self.texture_size.0 * 2 * std::mem::size_of::<f32>() as u32),
                 rows_per_image: Some(self.texture_size.1),
             },
             wgpu::Extent3d {
@@ -478,19 +478,20 @@ impl<'a> RenderState<'a> {
     pub fn randomize(&mut self) {
         let width = self.texture_size.0 as usize;
         let height = self.texture_size.1 as usize;
-        let capacity = width * height;
-        let mut data = Vec::with_capacity(capacity);
+        let capacity = width * height * 2;
+        let mut data: Vec<f32> = Vec::with_capacity(capacity);
         
         for y in 0..height {
             for x in 0..width {
                 let random_value: f32 = match rand::random::<bool>() {
                     true => 1.0,
-                    _ => 0.0,
+                    _ => -1.0,
                 };
                 data.push(random_value);
+                data.push(0.0);
             }
         }
 
-        self.set_texture(data.as_slice());
+        self.set_texture(bytemuck::cast_slice(data.as_slice()));
     }
 }
