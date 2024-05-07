@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use winit::{
-    application::ApplicationHandler, event::*, event_loop::ActiveEventLoop, keyboard::{KeyCode, PhysicalKey}, window::{Window, WindowId}
+    application::ApplicationHandler, dpi::PhysicalSize, event::*, event_loop::ActiveEventLoop, keyboard::{KeyCode, PhysicalKey}, window::{Window, WindowAttributes, WindowId}
 };
 
 use crate::render::RenderState;
@@ -18,7 +18,13 @@ impl ApplicationHandler for App<'_> {
         if self.window.is_none() {
             println!("Creating window and renderer");
 
-            let window = Arc::new(event_loop.create_window(Window::default_attributes()).unwrap());
+            let window = Arc::new(event_loop.create_window(Window::default_attributes()
+                .with_title("wgpu automata")
+                .with_inner_size(PhysicalSize {
+                    width: 1024u32,
+                    height: 1024u32,
+                })
+            ).unwrap());
             self.window = Some(window.clone());
 
             let mut state = pollster::block_on(RenderState::new(window.clone()));

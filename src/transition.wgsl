@@ -37,7 +37,7 @@ fn main(
     if (color.r > 0) {
         color.g = 1.0;
     } else {
-        color.g *= 0.9;
+        color.g *= 0.99;
     }
 
     textureStore(output_texture, coords, color);

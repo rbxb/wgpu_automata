@@ -2,8 +2,11 @@ use std::sync::Arc;
 use winit::{dpi::PhysicalSize, window::Window};
 use rand;
 
-const SIMULATION_WIDTH: u32 = 256;
-const SIMULATION_HEIGHT: u32 = 256;
+const SIMULATION_WIDTH: u32 = 2048;
+const SIMULATION_HEIGHT: u32 = 2048;
+
+const WORK_GROUP_READ_SIZE: u32 = 16;
+const WORK_GROUP_WRITE_SIZE: u32 = WORK_GROUP_READ_SIZE - 2;
 
 struct TextureResource {
     texture: wgpu::Texture,
@@ -60,7 +63,6 @@ const QUAD_VERTICES: &[Vertex] = &[
     Vertex { position: [0.0, 1.0, 0.0] },
     Vertex { position: [1.0, 1.0, 0.0] }
 ];
-
 pub struct RenderState<'a> {
     instance: wgpu::Instance,
     surface: wgpu::Surface<'a>,
@@ -73,6 +75,8 @@ pub struct RenderState<'a> {
     transition_pipeline: Option<wgpu::ComputePipeline>,
     display_pipeline: Option<wgpu::RenderPipeline>,
     vertex_buffer: Option<wgpu::Buffer>,
+    surface_size_buffer: Option<wgpu::Buffer>,
+    surface_size_bind_group: Option<wgpu::BindGroup>,
 }
 
 impl<'a> RenderState<'a> {
@@ -124,6 +128,8 @@ impl<'a> RenderState<'a> {
             transition_pipeline: None,
             display_pipeline: None,
             vertex_buffer: None,
+            surface_size_buffer: None,
+            surface_size_bind_group: None,
         }
     }
 
@@ -180,7 +186,7 @@ impl<'a> RenderState<'a> {
                 entries: &[
                     wgpu::BindGroupLayoutEntry {
                         binding: 0,
-                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        visibility: wgpu::ShaderStages::FRAGMENT | wgpu::ShaderStages::VERTEX,
                         ty: wgpu::BindingType::Texture {
                             multisampled: false,
                             view_dimension: wgpu::TextureViewDimension::D2,
@@ -198,11 +204,59 @@ impl<'a> RenderState<'a> {
                 label: Some("display_bind_group_layout"),
             });
 
+        // Create surface size uniform
+        self.surface_size_buffer = Some(self.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("surface_size_buffer"),
+            size: (std::mem::size_of::<u32>() * 2) as u64,
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        }));
+
+        // Upload the surface size
+        self.queue.write_buffer(
+            &self.surface_size_buffer.as_ref().unwrap(), 
+            0, 
+            bytemuck::cast_slice(&[self.surface_config.width, self.surface_config.height])
+        );
+
+        // Create surface size bind group layout
+        let surface_size_bind_group_layout = self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+            entries: &[
+                wgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: wgpu::ShaderStages::VERTEX,
+                    ty: wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }
+            ],
+            label: Some("surface_size_uniform_layout"),
+        });
+
+        // Create surface size bind group
+        self.surface_size_bind_group = Some(self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            layout: &surface_size_bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding {
+                        buffer: self.surface_size_buffer.as_ref().unwrap(),
+                        offset: 0,
+                        size: None,
+                    }),
+                }
+            ],
+            label: Some("camera_bind_group"),
+        }));
+
         // Create pipeline layout for display
         let display_pipeline_layout =
             self.device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("display_pipeline_layout"),
-                bind_group_layouts: &[&display_bind_group_layout],
+                bind_group_layouts: &[&display_bind_group_layout, &surface_size_bind_group_layout],
                 push_constant_ranges: &[],
             });
         
@@ -405,6 +459,7 @@ impl<'a> RenderState<'a> {
         let output = self.surface.get_current_texture().unwrap();
         let output_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let input_bind_group = &self.texture_swapper.as_ref().unwrap().get_read_resource().display_bind_group;
+        let surface_size_bind_group = self.surface_size_bind_group.as_ref().unwrap();
 
         let mut encoder = self.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("display_encoder"),
@@ -433,6 +488,7 @@ impl<'a> RenderState<'a> {
 
             render_pass.set_pipeline(&self.display_pipeline.as_ref().unwrap());
             render_pass.set_bind_group(0, input_bind_group.as_ref().unwrap(), &[]);
+            render_pass.set_bind_group(1, surface_size_bind_group, &[]);
             render_pass.set_vertex_buffer(0, self.vertex_buffer.as_ref().unwrap().slice(..));
             render_pass.draw(0..4, 0..1);
         }
@@ -446,6 +502,15 @@ impl<'a> RenderState<'a> {
             self.surface_config.width = new_size.width;
             self.surface_config.height = new_size.height;
             self.surface.configure(&self.device, &self.surface_config);
+
+            // Upload the surface size
+            if self.surface_size_buffer.is_some() {
+                self.queue.write_buffer(
+                    &self.surface_size_buffer.as_ref().unwrap(), 
+                    0, 
+                    bytemuck::cast_slice(&[self.surface_config.width, self.surface_config.height])
+                );
+            }
         }
     }
 
@@ -479,16 +544,27 @@ impl<'a> RenderState<'a> {
         let width = self.texture_size.0 as usize;
         let height = self.texture_size.1 as usize;
         let capacity = width * height * 2;
-        let mut data: Vec<f32> = Vec::with_capacity(capacity);
+        let mut data = vec![0f32; capacity];
         
-        for y in 0..height {
-            for x in 0..width {
+        for y in 0..(height / 2) {
+            for x in 0..(width / 2) {
                 let random_value: f32 = match rand::random::<bool>() {
                     true => 1.0,
                     _ => -1.0,
                 };
-                data.push(random_value);
-                data.push(0.0);
+
+                if x < (width/4) || y < (height/4) {
+                    continue;
+                }
+
+                if (width / 2 - x) < (width/8) && (height / 2 - y) < (height/8) {
+                    continue;
+                }
+
+                data[(y * width + x) * 2] = random_value;
+                data[(y * width + (width - x - 1)) * 2] = random_value;
+                data[((height - y - 1) * width + x) * 2] = random_value;
+                data[((height - y - 1) * width + (width - x - 1)) * 2] = random_value;
             }
         }
 
