@@ -3,8 +3,8 @@ use wgpu::CommandBuffer;
 use winit::{dpi::PhysicalSize, window::Window};
 use rand;
 
-const SIMULATION_WIDTH: u32 = 2048;
-const SIMULATION_HEIGHT: u32 = 2048;
+const SIMULATION_WIDTH: u32 = 1024;
+const SIMULATION_HEIGHT: u32 = 1024;
 
 struct TextureResource {
     texture: wgpu::Texture,
@@ -555,13 +555,17 @@ impl<'a> RenderState<'a> {
                     _ => -1.0,
                 };
 
-                if x < (width/4) || y < (height/4) {
+                if x <= (width / 2 - y) {
                     continue;
                 }
 
-                if (width / 2 - x) < (width/8) && (height / 2 - y) < (height/8) {
+                if x >= (width / 4 + (height / 2 - y)) {
                     continue;
                 }
+
+                /*if (width / 2 - x) < (width/8) && (height / 2 - y) < (height/8) {
+                    continue;
+                }*/
 
                 data[(y * width + x) * 2] = random_value;
                 data[(y * width + (width - x - 1)) * 2] = random_value;
