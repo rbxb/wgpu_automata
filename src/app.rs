@@ -1,15 +1,21 @@
 use std::sync::Arc;
-
 use winit::{
-    application::ApplicationHandler, dpi::PhysicalSize, event::*, event_loop::ActiveEventLoop, keyboard::{KeyCode, PhysicalKey}, window::{Window, WindowAttributes, WindowId}
+    application::ApplicationHandler,
+    dpi::PhysicalSize, event::*,
+    event_loop::ActiveEventLoop,
+    keyboard::{KeyCode, PhysicalKey},
+    window::{Window, WindowId}
 };
-
+use std::time::Instant;
 use crate::render::RenderState;
 
 #[derive(Default)]
 pub struct App<'a> {
     window: Option<Arc<Window>>,
     state: Option<RenderState<'a>>,
+    last_now: Option<Instant>,
+    sum_frame_time: u128,
+    frame_count: u128,
 }
 
 impl ApplicationHandler for App<'_> {
@@ -39,6 +45,7 @@ impl ApplicationHandler for App<'_> {
             return;
         }
 
+        let window = self.window.as_ref().unwrap();
         let state = self.state.as_mut().unwrap();
 
         match event {
@@ -48,12 +55,22 @@ impl ApplicationHandler for App<'_> {
             },
             WindowEvent::Resized(physical_size) => {
                 println!("Resize requested");
-                self.state.as_mut().unwrap().resize(physical_size);
+                state.resize(physical_size);
             },
             WindowEvent::RedrawRequested => {
                 state.transition();
                 state.draw();
-                self.window.as_ref().unwrap().request_redraw();
+                if self.last_now.is_some() {
+                    self.sum_frame_time += self.last_now.unwrap().elapsed().as_micros();
+                    self.frame_count += 1;
+                    if self.frame_count == 100 {
+                        println!("{} fps", 1e+6f32 / (self.sum_frame_time / self.frame_count) as f32);
+                        self.sum_frame_time = 0;
+                        self.frame_count = 0;
+                    }
+                }
+                self.last_now = Some(Instant::now());
+                window.request_redraw();
             },
             WindowEvent::KeyboardInput {
                 event:

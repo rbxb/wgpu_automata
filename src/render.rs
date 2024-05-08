@@ -2,11 +2,8 @@ use std::sync::Arc;
 use winit::{dpi::PhysicalSize, window::Window};
 use rand;
 
-const SIMULATION_WIDTH: u32 = 2048;
-const SIMULATION_HEIGHT: u32 = 2048;
-
-const WORK_GROUP_READ_SIZE: u32 = 16;
-const WORK_GROUP_WRITE_SIZE: u32 = WORK_GROUP_READ_SIZE - 2;
+const SIMULATION_WIDTH: u32 = 1024;
+const SIMULATION_HEIGHT: u32 = 1024;
 
 struct TextureResource {
     texture: wgpu::Texture,
@@ -155,6 +152,24 @@ impl<'a> RenderState<'a> {
                             access: wgpu::StorageTextureAccess::WriteOnly, 
                             format: wgpu::TextureFormat::Rg32Float, 
                             view_dimension: wgpu::TextureViewDimension::D2,
+                        },
+                        count: None,
+                    },
+                ],
+                label: Some("transition_bind_group_layout"),
+            });
+
+        // Create bind group layout for shared memory
+        let transition_workgroup_storage_bind_group_layout = 
+            self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::COMPUTE,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Storage { read_only: false },
+                            has_dynamic_offset: true,
+                            min_binding_size: None,
                         },
                         count: None,
                     },
@@ -425,7 +440,7 @@ impl<'a> RenderState<'a> {
         let y = (height + workgroup_height - 1) / workgroup_height;
     
         (x, y)
-    }    
+    }
 
     pub fn transition(&mut self) {
         let texture_resource = self.texture_swapper.as_ref().unwrap().get_read_resource();
@@ -443,8 +458,10 @@ impl<'a> RenderState<'a> {
 
             let (dispatch_with, dispatch_height) = RenderState::compute_work_group_count(
                 (texture_size.width, texture_size.height), 
-                (16, 16)
+                (14, 14)
             );
+            // The work groups are actually 16x16 but we use 14x14 because the threads around the edges
+            // are only used for populating the shared memory.
 
             compute_pass.set_pipeline(self.transition_pipeline.as_ref().unwrap());
             compute_pass.set_bind_group(0, texture_resource.transition_bind_group.as_ref().unwrap(), &[]);
