@@ -1,9 +1,10 @@
 use std::sync::Arc;
+use wgpu::CommandBuffer;
 use winit::{dpi::PhysicalSize, window::Window};
 use rand;
 
-const SIMULATION_WIDTH: u32 = 1024;
-const SIMULATION_HEIGHT: u32 = 1024;
+const SIMULATION_WIDTH: u32 = 2048;
+const SIMULATION_HEIGHT: u32 = 2048;
 
 struct TextureResource {
     texture: wgpu::Texture,
@@ -61,7 +62,7 @@ const QUAD_VERTICES: &[Vertex] = &[
     Vertex { position: [1.0, 1.0, 0.0] }
 ];
 pub struct RenderState<'a> {
-    instance: wgpu::Instance,
+    _instance: wgpu::Instance,
     surface: wgpu::Surface<'a>,
     device: wgpu::Device,
     queue: wgpu::Queue,
@@ -115,7 +116,7 @@ impl<'a> RenderState<'a> {
         let texture_size = (SIMULATION_WIDTH, SIMULATION_HEIGHT);   
 
         Self {
-            instance,
+            _instance: instance,
             surface,
             device,
             queue,
@@ -152,24 +153,6 @@ impl<'a> RenderState<'a> {
                             access: wgpu::StorageTextureAccess::WriteOnly, 
                             format: wgpu::TextureFormat::Rg32Float, 
                             view_dimension: wgpu::TextureViewDimension::D2,
-                        },
-                        count: None,
-                    },
-                ],
-                label: Some("transition_bind_group_layout"),
-            });
-
-        // Create bind group layout for shared memory
-        let transition_workgroup_storage_bind_group_layout = 
-            self.device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-                entries: &[
-                    wgpu::BindGroupLayoutEntry {
-                        binding: 0,
-                        visibility: wgpu::ShaderStages::COMPUTE,
-                        ty: wgpu::BindingType::Buffer {
-                            ty: wgpu::BufferBindingType::Storage { read_only: false },
-                            has_dynamic_offset: true,
-                            min_binding_size: None,
                         },
                         count: None,
                     },
@@ -442,7 +425,7 @@ impl<'a> RenderState<'a> {
         (x, y)
     }
 
-    pub fn transition(&mut self) {
+    pub fn transition(&mut self) -> CommandBuffer {
         let texture_resource = self.texture_swapper.as_ref().unwrap().get_read_resource();
         let texture_size = texture_resource.texture.size();
 
@@ -468,11 +451,11 @@ impl<'a> RenderState<'a> {
             compute_pass.dispatch_workgroups(dispatch_with, dispatch_height, 1);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
         self.texture_swapper.as_mut().unwrap().swap();
+        encoder.finish()
     }
 
-    pub fn draw(&self) {
+    pub fn draw(&mut self) {
         let output = self.surface.get_current_texture().unwrap();
         let output_view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
         let input_bind_group = &self.texture_swapper.as_ref().unwrap().get_read_resource().display_bind_group;
@@ -510,7 +493,9 @@ impl<'a> RenderState<'a> {
             render_pass.draw(0..4, 0..1);
         }
 
-        self.queue.submit(std::iter::once(encoder.finish()));
+        let transition_command_buffer = self.transition();
+
+        self.queue.submit([transition_command_buffer, encoder.finish()].into_iter());
         output.present();
     }
 

@@ -58,7 +58,6 @@ impl ApplicationHandler for App<'_> {
                 state.resize(physical_size);
             },
             WindowEvent::RedrawRequested => {
-                state.transition();
                 state.draw();
                 if self.last_now.is_some() {
                     self.sum_frame_time += self.last_now.unwrap().elapsed().as_micros();
@@ -102,11 +101,11 @@ impl ApplicationHandler for App<'_> {
         }
     }
 
-    fn suspended(&mut self, event_loop: &ActiveEventLoop) {
+    fn suspended(&mut self, _event_loop: &ActiveEventLoop) {
         println!("App suspended");
     }
 
-    fn exiting(&mut self, event_loop: &ActiveEventLoop) {
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
         println!("App exiting");
         // shut down
     }
